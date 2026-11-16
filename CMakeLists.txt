@@ -27,6 +27,21 @@ if(FXSDK_PLATFORM_LONG STREQUAL "exword")
   generate_d01(TARGET extune OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/EXTune.d01"
     MODULE "extune")
 
+  # Independent gint-only test, to distinguish launcher/runtime failures from
+  # the new clock/profiler and JustUI startup code.
+  add_executable(extune_probe src/exword/probe.c)
+  target_compile_options(extune_probe PRIVATE
+    -Wall -Wextra -Os -flto=auto -fno-pic -fno-pie
+    -fno-stack-protector -ffunction-sections -fdata-sections)
+  target_link_options(extune_probe PRIVATE
+    -flto=auto -nostdlib -no-pie -Wl,--build-id=none
+    -Wl,--no-warn-rwx-segments -Wl,-Map=extune_probe.map
+    -Wl,--print-memory-usage)
+  target_link_libraries(extune_probe PRIVATE Gint::Gint)
+  generate_d01(TARGET extune_probe
+    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/EXTuneProbe.d01"
+    MODULE "extprb")
+
   if(NOT DEFINED EXWORD_METADATA_SOURCE)
     message(FATAL_ERROR
       "Set EXWORD_METADATA_SOURCE to the EX-word HTML metadata repository")
@@ -35,6 +50,13 @@ if(FXSDK_PLATFORM_LONG STREQUAL "exword")
     TARGET extune
     D01 "${CMAKE_CURRENT_BINARY_DIR}/EXTune.d01"
     APPID "EXTUN" TITLE "EXTune"
+    HTML_DIR "${EXWORD_METADATA_SOURCE}/html"
+    OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/packages"
+    LOCALES ja cn)
+  generate_exword_package(
+    TARGET extune_probe
+    D01 "${CMAKE_CURRENT_BINARY_DIR}/EXTuneProbe.d01"
+    APPID "EXPRB" TITLE "EXTune Probe"
     HTML_DIR "${EXWORD_METADATA_SOURCE}/html"
     OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/packages"
     LOCALES ja cn)

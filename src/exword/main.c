@@ -30,6 +30,7 @@ static volatile uint32_t benchmark_sink;
 static uint32_t benchmark_us;
 static bool benchmark_done;
 static bool profiler_available;
+static bool profiler_checked;
 static jscene *heading_scene;
 static jlabel *heading_label;
 
@@ -93,7 +94,7 @@ static void draw_bench(void)
 {
     char value[84];
     dtext(24, 96, C_BLACK, "Integer mixing, 100,000 iterations");
-    if(!profiler_available) {
+    if(profiler_checked && !profiler_available) {
         dtext(24, 132, C_RED, "gint profiling timer is unavailable.");
         return;
     }
@@ -153,6 +154,11 @@ static void draw_screen(int page)
 
 static void run_benchmark(void)
 {
+    /* Avoid claiming a timer before the first screen is displayed. */
+    if(!profiler_checked) {
+        profiler_available = (prof_init() == 0);
+        profiler_checked = true;
+    }
     if(!profiler_available) return;
     uint32_t v = 0x12345678;
     prof_t p = prof_make();
@@ -167,8 +173,29 @@ static void run_benchmark(void)
 
 int main(void)
 {
-    int page = PAGE_CLOCKS;
-    profiler_available = (prof_init() == 0);
+    int page = PAGE_ABOUT;
+
+    /*
+     * Hardware smoke checkpoint: display before any CPG/BSC inspection,
+     * profiler initialization, or JustUI widget allocation. If this screen
+     * never appears, the problem is earlier (loader, gint, or constructors).
+     * The start key may still be down when the module loads; accept a fresh
+     * KEYEV_DOWN and allow EXIT to return without touching hardware.
+     */
+    dclear(C_WHITE);
+    dtext(24, 34, C_BLACK, "EXTune / EX-word - boot checkpoint");
+    dtext(24, 85, C_BLACK, "gint rendering initialized.");
+    dtext(24, 119, C_DARK, "No clocks or memory settings changed.");
+    dtext(24, 173, C_BLUE, "Press EXE to continue.");
+    dtext(24, 207, C_DARK, "Press ESC to return to menu.");
+    dupdate();
+
+    while(true) {
+        key_event_t e = waitevent(NULL);
+        if(e.type != KEYEV_DOWN) continue;
+        if(e.key == KEY_EXIT) return -2;
+        if(e.key == KEY_EXE) break;
+    }
 
     /* JustUI renders the page title; gint handles EX-word key/touch events. */
     heading_scene = jscene_create(20, 48, DWIDTH-40, 30, NULL);
@@ -186,7 +213,8 @@ int main(void)
             if(choice >= 0 && choice < PAGE_COUNT) page = choice;
         }
         else if(e.type == KEYEV_DOWN || e.type == KEYEV_HOLD) {
-            if(e.key == KEY_EXIT || e.key == KEY_ACON) running = false;
+            /* Do not interpret a held launch/AC key as an immediate exit. */
+            if(e.key == KEY_EXIT && e.type == KEYEV_DOWN) running = false;
             else if(e.key == KEY_LEFT) page = (page + PAGE_COUNT - 1) % PAGE_COUNT;
             else if(e.key == KEY_RIGHT) page = (page + 1) % PAGE_COUNT;
             else if(e.key == KEY_EXE && page == PAGE_BENCH && e.type == KEYEV_DOWN)

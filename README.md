@@ -77,3 +77,26 @@ Outputs: `build-exword/EXTune.d01`,
 **Hardware status:** builds should be treated as untested on physical
 EX-word until confirmed; measure oscillator and bus timing before enabling
 any clock register writes.
+
+### CN startup diagnostics (2026-11-16)
+
+The initial CN build could immediately return to the dictionary menu without
+ever painting a screen. A successful CI build does not prove device startup.
+
+The new pipeline builds **two separate CN/JA applications**:
+
+- `packages/cn/EXPRB/` — `EXTune Probe`, a minimal gint-only renderer
+  with **no JustUI, clock-register reads, or timer initialization**.
+  It should visibly show "PASS: the EX-word module reached main()." and
+  remain on-screen until ESC is pressed.
+- `packages/cn/EXTUN/` — `EXTune`. It first displays a **boot checkpoint**,
+  prior to JustUI setup, clock snapshots, and benchmark timers. Press EXE to
+  enter the About page. Navigate LEFT/RIGHT to test other pages one at a time.
+  Clocks, registers, and benchmark are not accessed during initial startup.
+
+For a device that still exits instantly, first run **EXTune Probe**.
+If the probe fails too, investigate the EX-word launch/package/gint runtime.
+If the probe works but EXTune has no checkpoint, inspect JustUI's
+pre-main constructors or other linked drivers.
+If the checkpoint works but a subsequent page fails, the corresponding
+UI, clock or profiling path is responsible. No overclock writes are enabled.

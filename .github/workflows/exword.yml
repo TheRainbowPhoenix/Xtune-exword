@@ -68,11 +68,17 @@ jobs:
           cmake --build build-exword --parallel 2
           test -s build-exword/EXTune.d01
           test "$(stat -c %s build-exword/EXTune.d01)" -le 131072
+          test -s build-exword/EXTuneProbe.d01
+          test "$(stat -c %s build-exword/EXTuneProbe.d01)" -le 131072
           for locale in ja cn; do
             package="build-exword/packages/${locale}/EXTUN"
             test -s "$package/EXTune.d01"
             test -s "$package/diction.htm"
             test -f "$package/fileinfo.cji"
+            probe="build-exword/packages/${locale}/EXPRB"
+            test -s "$probe/EXTuneProbe.d01"
+            test -s "$probe/diction.htm"
+            test -f "$probe/fileinfo.cji"
           done
 
       - name: Upload EX-word packages and diagnostics
@@ -82,8 +88,11 @@ jobs:
           name: EXTune-exword
           path: |
             build-exword/EXTune.d01
+            build-exword/EXTuneProbe.d01
             build-exword/packages/
             build-exword/extune
             build-exword/extune.map
+            build-exword/extune_probe
+            build-exword/extune_probe.map
           if-no-files-found: warn
           retention-days: 14
