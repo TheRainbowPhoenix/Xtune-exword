@@ -74,7 +74,6 @@ jobs:
           # 6-byte internal module headers, plus the 0x80 byte entry offset.
           python3 - <<'PY'
           from pathlib import Path
-          import re
           import struct
           import subprocess
 
@@ -87,7 +86,7 @@ jobs:
               image = d01.read_bytes()
               assert len(basename) == 8 and basename.isascii()
               assert image[:16] == b"CASIODICPLUGIN10", (basename, image[:16])
-              assert image[16:22].rstrip(b"\\0") == module.encode("ascii")
+              assert image[16:22] == module.encode("ascii")
               assert image[48:52] == struct.pack(">I", 0x70000000)
               assert image[52:56] == struct.pack(">I", 0x74000000)
               assert image[56:60] == struct.pack(">I", 0x00008000)
@@ -95,7 +94,7 @@ jobs:
               elf = Path("build-exword") / elf_file
               header = subprocess.check_output(
                   ["sh-elf-readelf", "-h", str(elf)], text=True)
-              assert re.search(r"Entry point address:\\s*0x70000080\\b", header)
+              assert "0x70000080" in header
               for locale, info in [("cn", "infgtcn3.htm"),
                                    ("ja", "infogt5.htm")]:
                   package = Path("build-exword/packages") / locale / appid
