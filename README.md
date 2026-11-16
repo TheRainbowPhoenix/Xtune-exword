@@ -69,7 +69,7 @@ cmake -S . -B build-exword \
 cmake --build build-exword --parallel 2
 ```
 
-Outputs: `build-exword/EXTune.d01`,
+Outputs: `build-exword/extune00.d01`,
 `build-exword/packages/ja/EXTUN/` and
 `build-exword/packages/cn/EXTUN/`. See
 `.github/workflows/exword.yml` for the full reproducible setup.
@@ -100,3 +100,17 @@ If the probe works but EXTune has no checkpoint, inspect JustUI's
 pre-main constructors or other linked drivers.
 If the checkpoint works but a subsequent page fails, the corresponding
 UI, clock or profiling path is responsible. No overclock writes are enabled.
+
+### EX-word D01 filename compatibility
+
+The first CN builds returned straight to the menu. Comparing their packages to
+EXWord Explorer revealed a loader naming inconsistency: previous filenames
+were mixed-case (`EXTune.d01`) and the probe exceeded 8 ASCII filename
+characters. Explorer uses an eight-character lowercase filename and a
+matching six-character identifier in the D01 header.
+
+This revision uses `extune00.d01` (header `extune`) and `extprb00.d01`
+(header `extprb`). CI verifies D01 headers, ELF entrypoints, packaged files
+and the Japanese/Chinese `addin` metadata. This is a hypothesis, not proof
+of a hardware fix. Completely replace the old EXTUN/EXPRB installation folders;
+do not rename a D01 file independently of its metadata. Test EXPRB first.

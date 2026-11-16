@@ -66,17 +66,53 @@ jobs:
             '-DCMAKE_MODULE_PATH=/tmp/gint-exword/lib/cmake/fxsdk;/tmp/justui-exword/lib/cmake/fxsdk;/tmp/fxsdk-exword/lib/cmake/fxsdk' \
             -DEXWORD_METADATA_SOURCE=/tmp/exword-metadata
           cmake --build build-exword --parallel 2
-          test -s build-exword/EXTune.d01
-          test "$(stat -c %s build-exword/EXTune.d01)" -le 131072
-          test -s build-exword/EXTuneProbe.d01
-          test "$(stat -c %s build-exword/EXTuneProbe.d01)" -le 131072
+          test -s build-exword/extune00.d01
+          test "$(stat -c %s build-exword/extune00.d01)" -le 131072
+          test -s build-exword/extprb00.d01
+          test "$(stat -c %s build-exword/extprb00.d01)" -le 131072
+          # Match the working Explorer's lower-case 8.3 filenames and
+          # 6-byte internal module headers, plus the 0x80 byte entry offset.
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import struct
+          import subprocess
+
+          builds = [
+              ("extune00", "extune", "EXTUN", "extune"),
+              ("extprb00", "extprb", "EXPRB", "extune_probe"),
+          ]
+          for basename, module, appid, elf_file in builds:
+              d01 = Path("build-exword") / (basename + ".d01")
+              image = d01.read_bytes()
+              assert len(basename) == 8 and basename.isascii()
+              assert image[:16] == b"CASIODICPLUGIN10", (basename, image[:16])
+              assert image[16:22].rstrip(b"\\0") == module.encode("ascii")
+              assert image[48:52] == struct.pack(">I", 0x70000000)
+              assert image[52:56] == struct.pack(">I", 0x74000000)
+              assert image[56:60] == struct.pack(">I", 0x00008000)
+              assert 128 < len(image) <= 131072
+              elf = Path("build-exword") / elf_file
+              header = subprocess.check_output(
+                  ["sh-elf-readelf", "-h", str(elf)], text=True)
+              assert re.search(r"Entry point address:\\s*0x70000080\\b", header)
+              for locale, info in [("cn", "infgtcn3.htm"),
+                                   ("ja", "infogt5.htm")]:
+                  package = Path("build-exword/packages") / locale / appid
+                  assert (package / d01.name).read_bytes() == image
+                  metadata = (package / info).read_text()
+                  assert f'addin="ON,{basename}.d01"' in metadata
+                  assert (package / "diction.htm").is_file()
+                  assert (package / "fileinfo.cji").is_file()
+              print(f"{basename}.d01: header, entry, CN/JA metadata OK")
+          PY
           for locale in ja cn; do
             package="build-exword/packages/${locale}/EXTUN"
-            test -s "$package/EXTune.d01"
+            test -s "$package/extune00.d01"
             test -s "$package/diction.htm"
             test -f "$package/fileinfo.cji"
             probe="build-exword/packages/${locale}/EXPRB"
-            test -s "$probe/EXTuneProbe.d01"
+            test -s "$probe/extprb00.d01"
             test -s "$probe/diction.htm"
             test -f "$probe/fileinfo.cji"
           done
@@ -87,8 +123,8 @@ jobs:
         with:
           name: EXTune-exword
           path: |
-            build-exword/EXTune.d01
-            build-exword/EXTuneProbe.d01
+            build-exword/extune00.d01
+            build-exword/extprb00.d01
             build-exword/packages/
             build-exword/extune
             build-exword/extune.map

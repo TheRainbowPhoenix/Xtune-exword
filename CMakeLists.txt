@@ -24,7 +24,7 @@ if(FXSDK_PLATFORM_LONG STREQUAL "exword")
     -Wl,--print-memory-usage)
   target_link_libraries(extune PRIVATE JustUI::JustUI Gint::Gint)
 
-  generate_d01(TARGET extune OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/EXTune.d01"
+  generate_d01(TARGET extune OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/extune00.d01"
     MODULE "extune")
 
   # Independent gint-only test, to distinguish launcher/runtime failures from
@@ -39,7 +39,7 @@ if(FXSDK_PLATFORM_LONG STREQUAL "exword")
     -Wl,--print-memory-usage)
   target_link_libraries(extune_probe PRIVATE Gint::Gint)
   generate_d01(TARGET extune_probe
-    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/EXTuneProbe.d01"
+    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/extprb00.d01"
     MODULE "extprb")
 
   if(NOT DEFINED EXWORD_METADATA_SOURCE)
@@ -48,14 +48,14 @@ if(FXSDK_PLATFORM_LONG STREQUAL "exword")
   endif()
   generate_exword_package(
     TARGET extune
-    D01 "${CMAKE_CURRENT_BINARY_DIR}/EXTune.d01"
+    D01 "${CMAKE_CURRENT_BINARY_DIR}/extune00.d01"
     APPID "EXTUN" TITLE "EXTune"
     HTML_DIR "${EXWORD_METADATA_SOURCE}/html"
     OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/packages"
     LOCALES ja cn)
   generate_exword_package(
     TARGET extune_probe
-    D01 "${CMAKE_CURRENT_BINARY_DIR}/EXTuneProbe.d01"
+    D01 "${CMAKE_CURRENT_BINARY_DIR}/extprb00.d01"
     APPID "EXPRB" TITLE "EXTune Probe"
     HTML_DIR "${EXWORD_METADATA_SOURCE}/html"
     OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/packages"
