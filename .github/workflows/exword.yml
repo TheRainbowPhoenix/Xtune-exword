@@ -87,9 +87,11 @@ jobs:
               assert len(basename) == 8 and basename.isascii()
               assert image[:16] == b"CASIODICPLUGIN10", (basename, image[:16])
               assert image[16:22] == module.encode("ascii")
-              assert image[48:52] == struct.pack(">I", 0x70000000)
-              assert image[52:56] == struct.pack(">I", 0x74000000)
-              assert image[56:60] == struct.pack(">I", 0x00008000)
+              # Header fields follow the legacy elf2d01 128-byte ABI:
+              # 0x2c = ROM base; 0x30 = RAM base; 0x34 = RAM size.
+              assert image[44:48] == struct.pack(">I", 0x70000000)
+              assert image[48:52] == struct.pack(">I", 0x74000000)
+              assert image[52:56] == struct.pack(">I", 0x00008000)
               assert 128 < len(image) <= 131072
               elf = Path("build-exword") / elf_file
               header = subprocess.check_output(
