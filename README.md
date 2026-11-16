@@ -33,3 +33,47 @@ CPtune4 | fx-CP400(+E), fx-CG500 |
 ## License
 
 Legacy and gint releases are licensed under [GPLv2+](__legacy__/LICENSE.md) and [MIT/expat](LICENSE.md) licenses respectively.
+
+## EXTune on EX-word (experimental)
+
+The `exword` branch builds an initial **EXTune** (.d01) port using
+[gint-exword](https://github.com/TheRainbowPhoenix/gint-exword),
+[JustUI-exword](https://github.com/TheRainbowPhoenix/JustUI-exword), and
+[fxsdk-exword](https://github.com/TheRainbowPhoenix/fxsdk-exword).
+The build and packaging steps mirror EXWord-Explorer's GitHub Actions CI.
+
+This first stage provides clock frequency and CPG/BSC register inspection,
+a local integer benchmark, and a 528x320 EX-word interface with keyboard
+navigation and touch tabs. **This is not yet an overclocking build.**
+Ptune's calculator-specific PLL presets, memory timings, power controls,
+and configuration writes are deliberately excluded. The reported clock rates
+use gint's generic SH7305 formula and still need validation on EX-word
+hardware. Never flash calculator Ptune profiles to an EX-word.
+
+The `.d01` is packaged under application ID `EXTUN` for `ja` and
+`cn` using the same HTML metadata source as EXWord-Explorer.
+
+### Build
+
+Install the toolchain from `fxsdk-exword` branch
+`fix/exword-data-load-alignment`, `elf2d01`, the
+`feature/exword-runtime-bridge` branch of `gint-exword`,
+and `JustUI-exword` (branch `dev`). Then:
+
+```sh
+cmake -S . -B build-exword \
+  -DCMAKE_TOOLCHAIN_FILE=/tmp/fxsdk-exword/lib/cmake/fxsdk/EXWORD.cmake \
+  '-DCMAKE_PREFIX_PATH=/tmp/gint-exword;/tmp/justui-exword' \
+  '-DCMAKE_MODULE_PATH=/tmp/gint-exword/lib/cmake/fxsdk;/tmp/justui-exword/lib/cmake/fxsdk;/tmp/fxsdk-exword/lib/cmake/fxsdk' \
+  -DEXWORD_METADATA_SOURCE=/tmp/exword-metadata
+cmake --build build-exword --parallel 2
+```
+
+Outputs: `build-exword/EXTune.d01`,
+`build-exword/packages/ja/EXTUN/` and
+`build-exword/packages/cn/EXTUN/`. See
+`.github/workflows/exword.yml` for the full reproducible setup.
+
+**Hardware status:** builds should be treated as untested on physical
+EX-word until confirmed; measure oscillator and bus timing before enabling
+any clock register writes.

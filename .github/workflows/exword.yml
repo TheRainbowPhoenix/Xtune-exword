@@ -1,0 +1,89 @@
+name: Build EXTune (EX-word)
+
+on:
+  push:
+    branches: [exword]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  exword:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/therainbowphoenix/gint-docker:main
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install EX-word fxSDK and elf2d01
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch fix/exword-data-load-alignment https://github.com/TheRainbowPhoenix/fxsdk-exword.git /tmp/fxsdk-src
+          cmake -S /tmp/fxsdk-src -B /tmp/fxsdk-build -DCMAKE_INSTALL_PREFIX=/tmp/fxsdk-exword -DFXLINK_DISABLE_SDL2=ON -DFXLINK_DISABLE_UDISKS2=ON
+          cmake --build /tmp/fxsdk-build --parallel 2
+          cmake --install /tmp/fxsdk-build
+          git clone --depth=1 https://github.com/brijohn/elf2d01.git /tmp/elf2d01
+          cc -O2 /tmp/elf2d01/elf2d01.c -o /tmp/fxsdk-exword/bin/elf2d01
+          echo /tmp/fxsdk-exword/bin >> "$GITHUB_PATH"
+
+      - name: Build gint EX-word runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch feature/exword-runtime-bridge https://github.com/TheRainbowPhoenix/gint-exword.git /tmp/gint-src
+          cmake -S /tmp/gint-src -B /tmp/gint-build -DCMAKE_TOOLCHAIN_FILE=/tmp/fxsdk-exword/lib/cmake/fxsdk/EXWORD.cmake -DCMAKE_INSTALL_PREFIX=/tmp/gint-exword -DCMAKE_MODULE_PATH=/tmp/fxsdk-exword/lib/cmake/fxsdk
+          cmake --build /tmp/gint-build --parallel 2
+          cmake --install /tmp/gint-build
+
+      - name: Build and install JustUI for EX-word
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch dev https://github.com/TheRainbowPhoenix/JustUI-exword.git /tmp/justui-src
+          cmake -S /tmp/justui-src -B /tmp/justui-build \
+            -DCMAKE_TOOLCHAIN_FILE=/tmp/fxsdk-exword/lib/cmake/fxsdk/EXWORD.cmake \
+            -DCMAKE_INSTALL_PREFIX=/tmp/justui-exword \
+            -DCMAKE_PREFIX_PATH=/tmp/gint-exword \
+            '-DCMAKE_MODULE_PATH=/tmp/gint-exword/lib/cmake/fxsdk;/tmp/fxsdk-exword/lib/cmake/fxsdk'
+          cmake --build /tmp/justui-build --parallel 2
+          cmake --install /tmp/justui-build
+
+      - name: Build EXTune and EX-word installation packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch main https://github.com/TheRainbowPhoenix/exword-xd-a8500-TEST.git /tmp/exword-metadata
+          cmake -S . -B build-exword \
+            -DCMAKE_TOOLCHAIN_FILE=/tmp/fxsdk-exword/lib/cmake/fxsdk/EXWORD.cmake \
+            '-DCMAKE_PREFIX_PATH=/tmp/gint-exword;/tmp/justui-exword' \
+            '-DCMAKE_MODULE_PATH=/tmp/gint-exword/lib/cmake/fxsdk;/tmp/justui-exword/lib/cmake/fxsdk;/tmp/fxsdk-exword/lib/cmake/fxsdk' \
+            -DEXWORD_METADATA_SOURCE=/tmp/exword-metadata
+          cmake --build build-exword --parallel 2
+          test -s build-exword/EXTune.d01
+          test "$(stat -c %s build-exword/EXTune.d01)" -le 131072
+          for locale in ja cn; do
+            package="build-exword/packages/${locale}/EXTUN"
+            test -s "$package/EXTune.d01"
+            test -s "$package/diction.htm"
+            test -f "$package/fileinfo.cji"
+          done
+
+      - name: Upload EX-word packages and diagnostics
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: EXTune-exword
+          path: |
+            build-exword/EXTune.d01
+            build-exword/packages/
+            build-exword/extune
+            build-exword/extune.map
+          if-no-files-found: warn
+          retention-days: 14

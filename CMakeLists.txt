@@ -5,6 +5,42 @@ set(XTUNE_VERSION "00.21.0000")
 cmake_minimum_required(VERSION 3.15)
 project(Xtune LANGUAGES ASM C VERSION ${XTUNE_VERSION})
 
+# EX-word's .d01 runtime uses a different linker, startup and package format
+# from the fx-9860G, fx-CG and fx-CP calculators. Keep the existing Ptune
+# sources and targets untouched for all other platforms.
+if(FXSDK_PLATFORM_LONG STREQUAL "exword")
+  include(GenerateD01)
+  include(GenerateEXWORDPackage)
+  find_package(Gint 2.11 REQUIRED)
+  find_package(JustUI 1.4 REQUIRED)
+
+  add_executable(extune src/exword/main.c)
+  target_compile_options(extune PRIVATE
+    -Wall -Wextra -Os -flto=auto -fno-pic -fno-pie
+    -fno-stack-protector -ffunction-sections -fdata-sections)
+  target_link_options(extune PRIVATE
+    -flto=auto -nostdlib -no-pie -Wl,--build-id=none
+    -Wl,--no-warn-rwx-segments -Wl,-Map=extune.map
+    -Wl,--print-memory-usage)
+  target_link_libraries(extune PRIVATE JustUI::JustUI Gint::Gint)
+
+  generate_d01(TARGET extune OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/EXTune.d01"
+    MODULE "extune")
+
+  if(NOT DEFINED EXWORD_METADATA_SOURCE)
+    message(FATAL_ERROR
+      "Set EXWORD_METADATA_SOURCE to the EX-word HTML metadata repository")
+  endif()
+  generate_exword_package(
+    TARGET extune
+    D01 "${CMAKE_CURRENT_BINARY_DIR}/EXTune.d01"
+    APPID "EXTUN" TITLE "EXTune"
+    HTML_DIR "${EXWORD_METADATA_SOURCE}/html"
+    OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/packages"
+    LOCALES ja cn)
+  return()
+endif()
+
 include(GenerateG1A)
 include(GenerateG3A)
 include(GenerateHH3)
