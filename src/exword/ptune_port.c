@@ -227,7 +227,9 @@ void pt_adjust_setting(int direction,int fine)
     int i=pt_setting_cursor;
     uint32_t cur=pt.settings[i];
     if(i<=PT_RAM_MARGIN) {
-        int v=(int)cur+direction; if(v<0)v=0;if(v>15)v=15;
+        int v=(int)cur+direction;
+        if(v<0)v=0;
+        if(v>15)v=15;
         pt.settings[i]=v;
     }
     else if(i<=PT_MAX_IO) {
@@ -241,24 +243,40 @@ void pt_adjust_setting(int direction,int fine)
     else pt.settings[i]=direction>0?1:0;
     pt.crc=checksum();
 }
-static int cap(const struct cpg_overclock_setting *newsetting)
+static uint64_t adjusted(uint32_t hz, uint32_t oldreg,
+    uint32_t newreg, int shift, uint64_t ratio, uint64_t original_ratio)
 {
+    unsigned old_div=setting_divider(oldreg,shift);
+    unsigned new_div=setting_divider(newreg,shift);
+    if(!old_div || !new_div || !original_ratio)return UINT64_MAX;
+    return (uint64_t)hz*ratio*old_div/original_ratio/new_div;
+}
+static int cap(const struct cpg_overclock_setting *s)
+{
+    unsigned flf=s->FLLFRQ&2047u;
+    unsigned pll=((s->FRQCR>>24)&63u)+1;
+    unsigned boot_fll=original.FLLFRQ&2047u;
+    unsigned boot_pll=((original.FRQCR>>24)&63u)+1;
+    if(flf<450 || !boot_fll || !boot_pll)return 0;
+    static const int shifts[4]={20,12,8,0};
+    for(unsigned i=0;i<4;i++)
+        if(((s->FRQCR>>shifts[i])&15u)>4u)return 0;
     if(pt.settings[PT_UNLOCKED])return 1;
-    unsigned new_fll=newsetting->FLLFRQ & 2047u;
-    unsigned new_pll=((newsetting->FRQCR>>24)&63u)+1;
-    unsigned old_fll=original.FLLFRQ & 2047u;
-    unsigned old_pll=((original.FRQCR>>24)&63u)+1;
-    if(!old_fll||!old_pll||new_fll<1||new_pll<1)return 0;
-    /* Unlocked mode is the sole route beyond stock +20% clocks. */
-    uint64_t mul=(uint64_t)new_fll*new_pll;
-    uint64_t base=(uint64_t)old_fll*old_pll;
-    if(mul*100u>base*120u)return 0;
-    uint64_t basecpu=(uint64_t)original_freq.Iphi_f*mul/base;
-    uint64_t basebus=(uint64_t)original_freq.Bphi_f*mul/base;
-    uint64_t baseio=(uint64_t)original_freq.Pphi_f*mul/base;
-    return basecpu<=pt.settings[PT_MAX_CPU] &&
-        basebus<=pt.settings[PT_MAX_BUS] &&
-        baseio<=pt.settings[PT_MAX_IO];
+    uint64_t ratio=(uint64_t)flf*pll;
+    uint64_t original_ratio=(uint64_t)boot_fll*boot_pll;
+    if(ratio*100>original_ratio*120)return 0;
+    uint64_t pll_hz=32768ull*ratio;
+    if(s->FLLFRQ&(1u<<14))pll_hz/=2;
+    if(pll_hz>pt.settings[PT_MAX_PLL])return 0;
+    const uint32_t source[4]={(uint32_t)original_freq.Iphi_f,
+        (uint32_t)original_freq.Sphi_f,(uint32_t)original_freq.Bphi_f,
+        (uint32_t)original_freq.Pphi_f};
+    for(unsigned i=0;i<4;i++) {
+        uint64_t hz=adjusted(source[i],original.FRQCR,s->FRQCR,
+            shifts[i],ratio,original_ratio);
+        if(hz>pt.settings[PT_MAX_CPU+i])return 0;
+    }
+    return 1;
 }
 void pt_edit_express(int direction)
 {
@@ -274,6 +292,33 @@ void pt_edit_express(int direction)
     if(i==0)s.FLLFRQ=(s.FLLFRQ&~mask)|newvalue;
     else s.FRQCR=(s.FRQCR&~(mask<<shift))|((uint32_t)newvalue<<shift);
     if(!cap(&s)){pt_notice=2;return;}
+    /* Increase ROM and SDRAM waits as necessary when raising the bus clock.
+       Do not silently reduce waits while the EX-word margin is unverified. */
+    if(pt.settings[PT_AUTO_WAIT] && (i==0 || i==1)) {
+        uint64_t mul=(uint64_t)(s.FLLFRQ&2047u)*
+            (((s.FRQCR>>24)&63u)+1);
+        uint64_t stock=(uint64_t)(original.FLLFRQ&2047u)*
+            (((original.FRQCR>>24)&63u)+1);
+        uint64_t bus=adjusted(original_freq.Bphi_f,original.FRQCR,
+            s.FRQCR,8,mul,stock);
+        int wait=12;
+        for(unsigned j=0;j<10;j++) {
+            uint64_t ceiling=(uint64_t)pt.roR[j]*
+                (100u-pt.settings[PT_ROM_MARGIN])/100u;
+            if(bus<=ceiling){wait=waits[j];break;}
+        }
+        int current=(s.CS0WCR>>7)&15u;
+        if(wait>current)
+            s.CS0WCR=(s.CS0WCR&~(15u<<7))|((uint32_t)wait<<7);
+        int trc=3;
+        for(unsigned j=0;j<4;j++) {
+            uint64_t ceiling=(uint64_t)pt.TRC[j]*
+                (100u-pt.settings[PT_RAM_MARGIN])/100u;
+            if(bus<=ceiling){trc=j;break;}
+        }
+        if(trc>(int)(s.CS3WCR&3u))
+            s.CS3WCR=(s.CS3WCR&~3u)|trc;
+    }
     cpg_set_overclock_setting(&s);
     pt_notice=0;
 }
@@ -291,7 +336,13 @@ void pt_edit_bsc(int direction)
     if(v<0||v>(int)masks[i]){pt_notice=2;return;}
     /* Avoid changing SDRAM CAS latency directly until its mode-reset timing
        can be reliably established for this EX-word model. */
-    if(i==3){pt_notice=3;return;}
+    if(i==3 && (!pt.settings[PT_UNLOCKED] || (v!=1 && v!=2))) {
+        pt_notice=3;return;
+    }
+    if(!pt.settings[PT_UNLOCKED]) {
+        uint32_t boot=(i<2?original.CS0WCR:original.CS3WCR);
+        if(v<(int)((boot>>shifts[i])&masks[i])) {pt_notice=2;return;}
+    }
     *reg=(*reg&~(masks[i]<<shifts[i]))|((uint32_t)v<<shifts[i]);
     /* One field change, preserving the other 9 boot memory controller words. */
     cpg_set_overclock_setting(&s);
@@ -307,6 +358,7 @@ void pt_choose_preset(bool capture)
     }
     else {
         if(pt_write_armed!=2){pt_notice=1;return;}
+        if(!cap(&pt.presets[i])){pt_notice=2;return;}
         /* Never replay a calculator preset. These four slots contain the
            user's captured EX-word register images only. */
         cpg_set_overclock_setting(&pt.presets[i]);

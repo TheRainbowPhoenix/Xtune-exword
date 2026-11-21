@@ -271,7 +271,7 @@ static void draw_about(void)
     dtext(22, 147, C_DARK, "RAM validation + clock candidate planning");
     dtext(22, 182, C_BLACK, "Original Ptune/Ftune calculator profiles");
     dtext(22, 205, C_BLACK, "are NOT safe presets for EX-word hardware.");
-    dtext(22, 246, C_RED, "Clock writes and BSC changes are LOCKED.");
+    dtext(22, 246, C_RED, "S,S arm hardware edits; R restores boot clocks.");
     dtext(22, 272, C_DARK, "All tests use this add-in's own memory.");
 }
 
@@ -390,6 +390,8 @@ int main(void)
 
     capture();
     pt_init();
+    (void)pt_load(); /* CPtune4 loads saved settings on startup. */
+    pt_set_notice(0);
 
     /* CPtune4 startup memory test prompt, before the Express menu. */
     if(pt.settings[PT_START_TEST]) {
