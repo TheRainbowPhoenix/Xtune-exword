@@ -179,3 +179,37 @@ Ptune presets into EX-word.
 board-level timings.** Experimental hardware writes may freeze the unit
 and could require a hardware RESTART. No tuner changes are persisted as
 startup clocks and the app attempts normal restored state when requested.
+
+### CPtune4 full navigation and runnable test menu
+
+The EX-word home menu is now a **JustUI two-column button grid**, with a
+persistent JustUI navigation row for Express / BSC / Tests / Memory Data /
+Settings / Menu. Every major feature is visible at launch. H always returns
+to the home menu; ESC returns home, then exits from home. Test selection uses
+UP/DOWN and EXE, including:
+
+- Short and long RAM pattern testing
+- Read-only add-in ROM image verification
+- March-C-style allocated RAM/SDRAM test, address-line alias test
+- CPU / ROM / RAM / LCD benchmark
+- ROM wait-state, SDRAM TRC and FLL clock-limit *hardware sweeps*
+- All non-destructive tests in sequence
+
+Experimental hardware sweeps require S twice to arm from BSC or Express.
+The 'Unrestricted mode' option is required before a sweep tests memory
+wait states faster than the saved boot setting. Sweeps save current
+registers, try each candidate and restore after each completed step. **A
+hard lock cannot be caught by software; hardware RESTART may be necessary.**
+
+**Full Bus State Controller:** all eight CS regions (CS0, CS2, CS3, CS4,
+CS5A, CS5B, CS6A, CS6B), raw BCR and WCR values, with BCR IWW/IWRWD/
+IWRWS/IWRRD/IWRRS, standard WCR WW/SW/HW/WR and SDRAM-specific TRP/
+TRCD/A3CL/TRWL/TRC. Use UP/DOWN to choose chip select, W to toggle
+BCR/WCR, A/D to choose field, EXE/Q to increment/decrement an armed field,
+R to restore the currently displayed BCR/WCR register. Hardware edits
+remain experimental.
+
+The original calculator Ptune ROM and SDRAM maximum-speed calibration
+routines used hard-coded memory addresses and unsafe raw timing
+assumptions. The test menu provides runnable EX-word-adapted integrity
+and stress tests rather than claiming those routines are identical.

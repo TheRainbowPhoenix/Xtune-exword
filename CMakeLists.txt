@@ -14,7 +14,12 @@ if(FXSDK_PLATFORM_LONG STREQUAL "exword")
   find_package(Gint 2.11 REQUIRED)
   find_package(JustUI 1.4 REQUIRED)
 
-  add_executable(extune src/exword/main.c src/exword/bench.c src/exword/ptune_port.c)
+  add_executable(extune
+    src/exword/main.c
+    src/exword/bench.c
+    src/exword/ptune_port.c
+    src/exword/bsc_full.c
+    src/exword/ex_tests.c)
   target_compile_options(extune PRIVATE
     -Wall -Wextra -Os -flto=auto -fno-pic -fno-pie
     -fno-stack-protector -ffunction-sections -fdata-sections)

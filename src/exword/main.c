@@ -20,6 +20,8 @@
 #include <stdio.h>
 #include "bench.h"
 #include "ptune_port.h"
+#include "bsc_full.h"
+#include "ex_tests.h"
 
 #if !GINT_HW_EX
 #error "EXTune EX-word requires EXWORD platform"
@@ -28,20 +30,37 @@
 enum {
     PAGE_EXPRESS, PAGE_CLOCK, PAGE_CPG, PAGE_BSC,
     PAGE_BENCH, PAGE_MEMORY, PAGE_MEMDATA, PAGE_SETTINGS,
-    PAGE_TUNE, PAGE_PRESETS, PAGE_HELP, PAGE_ABOUT, PAGE_COUNT
+    PAGE_TUNE, PAGE_PRESETS, PAGE_HELP, PAGE_ABOUT,
+    PAGE_TESTS, PAGE_HOME, PAGE_COUNT
 };
 static const char *const tabs[] = {
     "Express", "Clocks", "CPG", "BSC", "Bench", "RAM test",
-    "Mem Data", "Settings", "Plan", "Presets", "Help", "About"
+    "Mem Data", "Settings", "Plan", "Presets", "Help", "About",
+    "Tests", "Menu"
 };
 static const char *const titles[] = {
     "CPtune4 Express", "Live clocks", "Clock generator (CPG)",
     "Memory controller (BSC)", "Performance benchmark",
     "Non-destructive RAM validation", "CPtune4 Memory data",
     "CPtune4 Settings", "Frequency planning lab", "F2-F5 Presets",
-    "CPtune4 controls", "EXTune for EX-word"
+    "CPtune4 controls", "EXTune for EX-word",
+    "ROM / SDRAM / RAM / Clock tests", "CPtune4 - Main menu"
 };
-static int page = PAGE_EXPRESS;
+static int page = PAGE_HOME;
+static int home_selected;
+static jscene *home_scene;
+static jbutton *home_buttons[12];
+static const int home_pages[12] = {
+    PAGE_EXPRESS, PAGE_CLOCK, PAGE_CPG, PAGE_BSC, PAGE_BENCH, PAGE_TESTS,
+    PAGE_MEMDATA, PAGE_SETTINGS, PAGE_PRESETS, PAGE_MEMORY, PAGE_TUNE, PAGE_HELP
+};
+static const int nav_pages[6] = {
+    PAGE_EXPRESS, PAGE_BSC, PAGE_TESTS,
+    PAGE_MEMDATA, PAGE_SETTINGS, PAGE_HOME
+};
+static const char *const nav_labels[6] = {
+    "Express","BSC","Tests","Mem Data","Settings","MENU"
+};
 static int cpg_subpage, bsc_subpage;
 static int tune_field; /* 0 FLL, 1 PLL */
 static int tune_fll, tune_pll;
@@ -279,16 +298,15 @@ static void render(void)
 {
     dclear(C_WHITE);
     drect(0, 0, DWIDTH-1, 38, C_RGB(3, 9, 16));
-    int group = page / 6;
     for(int i=0;i<6;i++) {
         if(tab_buttons[i]) {
-            jbutton_set_text(tab_buttons[i],tabs[group*6+i]);
-            jbutton_set_disabled(tab_buttons[i],group*6+i == page);
+            jbutton_set_text(tab_buttons[i],nav_labels[i]);
+            jbutton_set_disabled(tab_buttons[i],nav_pages[i] == page);
         }
     }
     if(tab_scene) jscene_render(tab_scene);
     else for(int i=0;i<6;i++)
-        dtext(8+88*i,14,C_WHITE,tabs[group*6+i]);
+        dtext(8+88*i,14,C_WHITE,nav_labels[i]);
     if(heading_scene && heading_label) {
         jlabel_set_text(heading_label, titles[page]);
         jscene_render(heading_scene);
@@ -299,10 +317,7 @@ static void render(void)
         case PAGE_EXPRESS: pt_draw_express(); break;
         case PAGE_CLOCK: draw_clock(); break;
         case PAGE_CPG: draw_cpg(); break;
-        case PAGE_BSC:
-            if(bsc_subpage) pt_draw_bsc_editor();
-            else draw_bsc();
-            break;
+        case PAGE_BSC: ex_bsc_draw(); break;
         case PAGE_BENCH: draw_bench(); break;
         case PAGE_MEMORY: draw_memory(); break;
         case PAGE_MEMDATA:
@@ -318,6 +333,22 @@ static void render(void)
         case PAGE_PRESETS: pt_draw_presets(); break;
         case PAGE_HELP: pt_draw_help(); break;
         case PAGE_ABOUT: draw_about(); break;
+        case PAGE_TESTS: ex_tests_draw(); break;
+        case PAGE_HOME:
+            if(home_scene) {
+                for(int i=0;i<12;i++)
+                    if(home_buttons[i])
+                        jbutton_set_disabled(home_buttons[i],i==home_selected);
+                jscene_render(home_scene);
+            }
+            else {
+                for(int i=0;i<12;i++)
+                    dtext(25+(i/6)*250,85+(i%6)*30,C_BLACK,
+                        titles[home_pages[i]]);
+            }
+            dtext(20,274,C_DARK,
+                "Choose a feature: arrows + EXE, or touch a button.");
+            break;
     }
     if(pt_notice) {
         const char *msg[]={
@@ -333,13 +364,20 @@ static void render(void)
     }
     drect(0, 294, DWIDTH-1, DHEIGHT-1, C_RGB(3, 9, 16));
     dtext(11, 305, C_WHITE,
-        "LEFT/RIGHT page   EXE action   UP/DOWN option   ESC exit");
+        "H: menu   ESC: back   LEFT/RIGHT: pages   EXE: action");
     dupdate();
 }
 static void perform_action(int direction)
 {
-    if(page == PAGE_EXPRESS) pt_edit_express(direction);
-    else if(page == PAGE_BSC && bsc_subpage) pt_edit_bsc(direction);
+    if(page == PAGE_HOME) {
+        if(direction>0)page=home_pages[home_selected];
+    }
+    else if(page == PAGE_TESTS) {
+        if(direction>0)ex_tests_run(ex_tests.selected);
+    }
+    else if(page == PAGE_EXPRESS) pt_edit_express(direction);
+    else if(page == PAGE_BSC) ex_bsc_edit_field(direction,
+        pt_write_armed==2,pt.settings[PT_UNLOCKED]);
     else if(page == PAGE_MEMDATA) pt_mem_margin ^= 1;
     else if(page == PAGE_SETTINGS) pt_adjust_setting(direction,0);
     else if(page == PAGE_PRESETS && direction > 0) pt_choose_preset(false);
@@ -390,6 +428,7 @@ int main(void)
 
     capture();
     pt_init();
+    ex_bsc_init();
     (void)pt_load(); /* CPtune4 loads saved settings on startup. */
     pt_set_notice(0);
 
@@ -433,15 +472,32 @@ int main(void)
         }
     }
 
+    home_scene=jscene_create(18,85,DWIDTH-36,184,NULL);
+    if(home_scene) {
+        jlayout_box *layout=jlayout_set_hbox(home_scene);
+        if(layout)layout->spacing=6;
+        for(int c=0;c<2;c++) {
+            jwidget *column=jwidget_create(home_scene);
+            if(!column)continue;
+            jlayout_box *vbox=jlayout_set_vbox(column);
+            if(vbox)vbox->spacing=2;
+            for(int r=0;r<6;r++) {
+                int i=c*6+r;
+                home_buttons[i]=jbutton_create(titles[home_pages[i]],column);
+                if(home_buttons[i])
+                    jwidget_set_fixed_size(home_buttons[i],239,28);
+            }
+        }
+    }
     tab_scene=jscene_create(0,0,DWIDTH,38,NULL);
     if(tab_scene) {
         jlayout_box *layout=jlayout_set_hbox(tab_scene);
         if(layout) layout->spacing=1;
         for(int i=0;i<6;i++) {
-            tab_buttons[i]=jbutton_create(tabs[i],tab_scene);
+            tab_buttons[i]=jbutton_create(nav_labels[i],tab_scene);
             if(tab_buttons[i]) {
                 jwidget_set_fixed_size(tab_buttons[i],87,36);
-                jbutton_set_disabled(tab_buttons[i],i==0);
+                jbutton_set_disabled(tab_buttons[i],nav_pages[i]==page);
             }
         }
     }
@@ -457,8 +513,20 @@ int main(void)
         key_event_t e = waitevent(NULL);
         if(e.type == KEYEV_TOUCH_DOWN) {
             if(e.y < 39) {
-                int next = (page/6)*6 + e.x/(DWIDTH/6);
-                if(next >= 0 && next < PAGE_COUNT) page = next;
+                int index=e.x/(DWIDTH/6);
+                if(index>=0 && index<6) {
+                    page=nav_pages[index];
+                    pt_write_armed=0;
+                }
+            }
+            else if(page == PAGE_HOME &&
+                    e.x>=18 && e.x<DWIDTH-18 && e.y>=85 && e.y<269) {
+                int col=(e.x-18)/(DWIDTH/2-18);
+                int item=(e.y-85)/30;
+                if(col>=0&&col<2&&item>=0&&item<6) {
+                    home_selected=col*6+item;
+                    page=home_pages[home_selected];
+                }
             }
             else if(page == PAGE_TUNE && e.y > 247 && e.y < 292) {
                 if(e.x < DWIDTH / 2) perform_action(-1);
@@ -467,14 +535,32 @@ int main(void)
         }
         else if(e.type == KEYEV_DOWN || e.type == KEYEV_HOLD) {
             if(e.key == KEY_EXIT && e.type == KEYEV_DOWN) {
-                running = false;
+                if(page==PAGE_HOME)running=false;
+                else {page=PAGE_HOME;pt_write_armed=0;}
             }
-            else if(e.key == KEY_LEFT)
-                page = (page + PAGE_COUNT - 1) % PAGE_COUNT;
-            else if(e.key == KEY_RIGHT)
-                page = (page + 1) % PAGE_COUNT;
+            else if(e.key == KEY_EX_H) {
+                page=PAGE_HOME;pt_write_armed=0;
+            }
+            else if(e.key == KEY_LEFT) {
+                if(page==PAGE_HOME)
+                    home_selected=home_selected<6?home_selected+6:home_selected-6;
+                else {page=(page+PAGE_COUNT-1)%PAGE_COUNT;pt_write_armed=0;}
+            }
+            else if(e.key == KEY_RIGHT) {
+                if(page==PAGE_HOME)
+                    home_selected=home_selected<6?home_selected+6:home_selected-6;
+                else {page=(page+1)%PAGE_COUNT;pt_write_armed=0;}
+            }
             else if(e.key == KEY_UP) {
-                if(page == PAGE_EXPRESS) {
+                if(page == PAGE_HOME) {
+                    if(home_selected%6>0)home_selected--;
+                }
+                else if(page == PAGE_TESTS) {
+                    ex_tests.show_result=0;
+                    ex_tests_select(-1);
+                }
+                else if(page == PAGE_BSC) ex_bsc_move_chip(-1);
+                else if(page == PAGE_EXPRESS) {
                     if(pt_expr_cursor>0)pt_expr_cursor--;
                 }
                 else if(page == PAGE_SETTINGS) {
@@ -484,16 +570,20 @@ int main(void)
                     if(pt_preset_cursor>0)pt_preset_cursor--;
                 }
                 else if(page == PAGE_CPG) cpg_subpage ^= 1;
-                else if(page == PAGE_BSC) {
-                    if(!bsc_subpage)bsc_subpage=1;
-                    else if(pt_bsc_cursor>0)pt_bsc_cursor--;
-                }
                 else if(page == PAGE_TUNE) tune_field ^= 1;
                 else if(page == PAGE_MEMORY && e.type == KEYEV_DOWN)
                     perform_action(2);
             }
             else if(e.key == KEY_DOWN) {
-                if(page == PAGE_EXPRESS) {
+                if(page == PAGE_HOME) {
+                    if(home_selected%6<5)home_selected++;
+                }
+                else if(page == PAGE_TESTS) {
+                    ex_tests.show_result=0;
+                    ex_tests_select(1);
+                }
+                else if(page == PAGE_BSC) ex_bsc_move_chip(1);
+                else if(page == PAGE_EXPRESS) {
                     if(pt_expr_cursor<5)pt_expr_cursor++;
                 }
                 else if(page == PAGE_SETTINGS) {
@@ -503,22 +593,18 @@ int main(void)
                     if(pt_preset_cursor<3)pt_preset_cursor++;
                 }
                 else if(page == PAGE_CPG) cpg_subpage ^= 1;
-                else if(page == PAGE_BSC) {
-                    if(!bsc_subpage)bsc_subpage=1;
-                    else if(pt_bsc_cursor<4)pt_bsc_cursor++;
-                }
                 else if(page == PAGE_TUNE) tune_field ^= 1;
             }
             else if(e.type == KEYEV_DOWN) {
                 if(e.key == KEY_EXE) perform_action(1);
                 else if(e.key == KEY_EX_S &&
-                    (page == PAGE_EXPRESS || page == PAGE_BSC)) {
+                    (page == PAGE_EXPRESS || page == PAGE_BSC ||
+                     page == PAGE_TESTS)) {
                     pt_write_armed=(pt_write_armed+1)%3;
                     pt_set_notice(pt_write_armed==1?8:0);
                 }
                 else if(e.key == KEY_EX_Q &&
-                    (page == PAGE_EXPRESS ||
-                     (page == PAGE_BSC && bsc_subpage) ||
+                    (page == PAGE_EXPRESS || page == PAGE_BSC ||
                      page == PAGE_SETTINGS || page == PAGE_TUNE))
                     perform_action(-1);
                 else if(e.key == KEY_EX_Q && page == PAGE_MEMDATA)
@@ -545,8 +631,21 @@ int main(void)
                     tune_fll = baseline_fll;
                     tune_pll = baseline_pll;
                 }
-                else if(e.key == KEY_EX_V && page == PAGE_BSC)
-                    bsc_subpage ^= 1;
+                else if(e.key == KEY_EX_W && page == PAGE_BSC)
+                    ex_bsc_toggle_mode();
+                else if(e.key == KEY_EX_A && page == PAGE_BSC)
+                    ex_bsc_move_field(-1);
+                else if(e.key == KEY_EX_D && page == PAGE_BSC)
+                    ex_bsc_move_field(1);
+                else if(e.key == KEY_EX_R && page == PAGE_BSC)
+                    ex_bsc_restore_selected(pt_write_armed==2);
+                else if(e.key == KEY_EX_V && page == PAGE_TESTS)
+                    ex_tests.show_result ^= 1;
+                else if(e.key == KEY_EX_R && page == PAGE_TESTS) {
+                    ex_tests.selected=0;
+                    ex_tests.complete=0;
+                    ex_tests.show_result=0;
+                }
             }
         }
         if(running) render();
@@ -554,6 +653,7 @@ int main(void)
 
     if(heading_scene) jwidget_destroy(heading_scene);
     if(tab_scene) jwidget_destroy(tab_scene);
+    if(home_scene) jwidget_destroy(home_scene);
     extune_bench_quit();
     return -2;
 }
