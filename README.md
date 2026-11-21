@@ -114,3 +114,32 @@ This revision uses `extune00.d01` (header `extune`) and `extprb00.d01`
 and the Japanese/Chinese `addin` metadata. This is a hypothesis, not proof
 of a hardware fix. Completely replace the old EXTUN/EXPRB installation folders;
 do not rename a D01 file independently of its metadata. Test EXPRB first.
+
+### Ptune-style EX-word lab
+
+EXTune now has seven views: Clocks, CPG, BSC, Bench, RAM test,
+Plan, and About. The program intentionally retains its EX-word startup
+checkpoint; press EXE to enter. LEFT/RIGHT switch tabs, while CPG/BSC
+UP/DOWN toggle decoded and raw registers.
+
+- **Bench**: EXE measures 100,000 integer-mix iterations, 64 KiB reads
+  from this add-in's own ROM, 128 KiB of local RAM traffic, and a real
+  display transfer. The first benchmark is the local **100% baseline**;
+  subsequent values are relative to this run. Timings and scores are not
+  numerically equivalent to Ptune's assembly/memory benchmark.
+- **RAM test**: EXE tests an owned 1 KiB scratch buffer with 8 patterns,
+  UP performs 128 passes. No firmware or OS memory is touched.
+- **Plan**: UP/DOWN selects FLL or PLL multiplier; EXE increases, EX-word
+  Q decreases, and R resets. Displays hypothetical CPU/bus/I/O frequencies
+  relative to the boot register snapshot. The planner does **not** write
+  any clock, BSC or flash registers. Predicted clock speeds are not tested
+  operating frequencies; any real overclock needs device-specific
+  baseline validation, memory timing characterization, and recovery
+  considerations first.
+
+There are **no calculator Ptune F1-F5 presets** in the EX-word app:
+Ptune's memory buses, SDRAM setup and LCD interface differ. This build
+does not offer a "push to the limits" button or write untested PLL/BSC
+values to hardware. Record baseline clocks, raw registers, and benchmark
+results first. The only way to assess a real safe ceiling is with
+EX-word-specific characterization and on-device testing.

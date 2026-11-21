@@ -1,230 +1,405 @@
 /*
- * EXTune: initial EX-word port of Xtune/Ptune4.
+ * EXTune EX-word: Ptune-style monitor and non-destructive performance lab.
  *
- * Clock and BSC readings are intentionally read-only. The existing Ptune
- * profiles and wait-state calculations are specific to calculator hardware
- * and must NOT be applied to EX-word units without board-specific validation.
+ * The calculator Ptune presets assume *different* ROM, SDRAM, LCD and BSC
+ * timings. These are intentionally NOT written to unknown EX-word hardware.
  */
 #include <gint/config.h>
 #include <gint/clock.h>
 #include <gint/display.h>
 #include <gint/keyboard.h>
-#include <gint/prof.h>
+#include <gint/mpu/cpg.h>
+#include <gint/mpu/bsc.h>
 #include <justui/jscene.h>
 #include <justui/jlabel.h>
 #include <justui/jwidget.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include "bench.h"
 
 #if !GINT_HW_EX
-#error "EXTune must be built with the EXWORD toolchain"
+#error "EXTune EX-word requires EXWORD platform"
 #endif
 
-enum { PAGE_CLOCKS, PAGE_REGISTERS, PAGE_BENCH, PAGE_ABOUT, PAGE_COUNT };
-static const char *const titles[] = {
-    "Clock frequencies", "CPG / BSC registers", "CPU benchmark", "About EXTune"
+enum {
+    PAGE_CLOCK, PAGE_CPG, PAGE_BSC, PAGE_BENCH,
+    PAGE_MEMORY, PAGE_TUNE, PAGE_ABOUT, PAGE_COUNT
 };
-static const char *const tabs[] = { "Clocks", "Registers", "Benchmark", "About" };
-static volatile uint32_t benchmark_sink;
-static uint32_t benchmark_us;
-static bool benchmark_done;
-static bool profiler_available;
-static bool profiler_checked;
+static const char *const tabs[] = {
+    "Clocks", "CPG", "BSC", "Bench", "RAM test", "Plan", "About"
+};
+static const char *const titles[] = {
+    "Live clocks", "Clock generator (CPG)", "Memory controller (BSC)",
+    "Performance benchmark", "Non-destructive RAM validation",
+    "Frequency planning lab", "EXTune for EX-word"
+};
+static int page = PAGE_CLOCK;
+static int cpg_subpage, bsc_subpage;
+static int tune_field; /* 0 FLL, 1 PLL */
+static int tune_fll, tune_pll;
+static int baseline_fll, baseline_pll;
+static bool captured;
+static struct cpg_overclock_setting baseline;
+static clock_frequency_t baseline_freq;
+static extune_bench_t benchmark, benchmark_reference;
+static extune_memtest_t memory_result;
+static bool benchmark_ready;
+static bool benchmark_failed;
+static bool memory_stress;
 static jscene *heading_scene;
 static jlabel *heading_label;
 
-static void write_line(int y, char const *name, char const *value)
+static void row(int y, const char *name, const char *value)
 {
-    dtext(24, y, C_DARK, name);
-    dtext(235, y, C_BLACK, value);
+    dtext(22, y, C_DARK, name);
+    dtext(233, y, C_BLACK, value);
 }
-
-static void write_frequency(int y, char const *name, int hz)
+static void number(int y, const char *name, uint32_t value)
 {
-    char value[48];
-    if(hz <= 0)
-        snprintf(value, sizeof value, "Not available");
-    else
-        snprintf(value, sizeof value, "%u.%03u MHz",
-            (unsigned)hz / 1000000, ((unsigned)hz % 1000000) / 1000);
-    write_line(y, name, value);
+    char s[32];
+    snprintf(s, sizeof s, "%lu", (unsigned long)value);
+    row(y, name, s);
 }
-
-static void write_register(int y, char const *name, uint32_t value)
+static void hex(int y, const char *name, uint32_t value)
 {
-    char hex[24];
-    snprintf(hex, sizeof hex, "0x%08lX", (unsigned long)value);
-    write_line(y, name, hex);
+    char s[24];
+    snprintf(s, sizeof s, "0x%08lX", (unsigned long)value);
+    row(y, name, s);
 }
-
-static void draw_clocks(void)
+static void freq(int y, const char *name, uint32_t hz)
 {
-    cpg_compute_freq(); /* Only reads the CPG; never changes its registers. */
-    clock_frequency_t const *f = clock_freq();
-    char ratio[32];
-
-    write_frequency(91, "CPU (Iphi)", f->Iphi_f);
-    write_frequency(117, "SuperHyway (Sphi)", f->Sphi_f);
-    write_frequency(143, "Bus (Bphi)", f->Bphi_f);
-    write_frequency(169, "Peripheral (Pphi)", f->Pphi_f);
-    snprintf(ratio, sizeof ratio, "%d x %d", f->FLL, f->PLL);
-    write_line(199, "FLL x PLL", ratio);
-    snprintf(ratio, sizeof ratio, "1/%d  1/%d  1/%d  1/%d",
-        f->Iphi_div, f->Sphi_div, f->Bphi_div, f->Pphi_div);
-    write_line(225, "I / S / B / P", ratio);
-    dtext(24, 259, C_DARK, "Estimated using gint's SH7305 clock model.");
+    char s[32];
+    snprintf(s, sizeof s, "%lu.%03lu MHz",
+        (unsigned long)(hz / 1000000u),
+        (unsigned long)((hz % 1000000u) / 1000u));
+    row(y, name, s);
 }
-
-static void draw_registers(void)
+static void mhz_uint(int y, const char *name, uint64_t hz)
 {
-    struct cpg_overclock_setting s;
-    cpg_get_overclock_setting(&s); /* Read-only snapshot. */
-    write_register(88, "FLLFRQ", s.FLLFRQ);
-    write_register(111, "FRQCR", s.FRQCR);
-    write_register(140, "CS0BCR (ROM)", s.CS0BCR);
-    write_register(163, "CS0WCR (ROM)", s.CS0WCR);
-    write_register(186, "CS2WCR", s.CS2WCR);
-    write_register(209, "CS3WCR (RAM)", s.CS3WCR);
-    write_register(232, "CS5aWCR", s.CS5aWCR);
-    dtext(24, 260, C_DARK, "No memory latency or PLL writes are performed.");
-}
-
-static void draw_bench(void)
-{
-    char value[84];
-    dtext(24, 96, C_BLACK, "Integer mixing, 100,000 iterations");
-    if(profiler_checked && !profiler_available) {
-        dtext(24, 132, C_RED, "gint profiling timer is unavailable.");
+    if(hz > UINT32_MAX) {
+        row(y, name, "Beyond 32-bit range");
         return;
     }
-    if(!benchmark_done) {
-        dtext(24, 132, C_DARK, "Press EXE to start the benchmark.");
+    freq(y, name, (uint32_t)hz);
+}
+static void capture(void)
+{
+    if(captured) return;
+    cpg_compute_freq();
+    baseline_freq = *clock_freq();
+    cpg_get_overclock_setting(&baseline);
+    baseline_fll = baseline.FLLFRQ & 2047u;
+    baseline_pll = ((baseline.FRQCR >> 24) & 63u) + 1;
+    tune_fll = baseline_fll;
+    tune_pll = baseline_pll;
+    captured = true;
+}
+
+static void draw_clock(void)
+{
+    cpg_compute_freq();
+    const clock_frequency_t *f = clock_freq();
+    char s[60];
+    freq(89, "CPU / Iphi", f->Iphi_f);
+    freq(114, "SuperHyway / Sphi", f->Sphi_f);
+    freq(139, "Memory bus / Bphi", f->Bphi_f);
+    freq(164, "Peripheral / Pphi", f->Pphi_f);
+    snprintf(s, sizeof s, "FLL %d  x  PLL %d", f->FLL, f->PLL);
+    row(194, "Multiplier", s);
+    snprintf(s, sizeof s, "I/%d  S/%d  B/%d  P/%d",
+        f->Iphi_div, f->Sphi_div, f->Bphi_div, f->Pphi_div);
+    row(219, "Dividers", s);
+    dtext(22, 254, C_DARK, "Computed from SH7305 CPG, not externally measured.");
+    dtext(22, 275, C_DARK, "EXE: refresh clocks / registers");
+}
+static void draw_cpg(void)
+{
+    struct cpg_overclock_setting s;
+    cpg_get_overclock_setting(&s);
+    if(!cpg_subpage) {
+        hex(86, "FLLFRQ", s.FLLFRQ);
+        hex(111, "FRQCR", s.FRQCR);
+        hex(136, "PLLCR", SH7305_CPG.PLLCR.lword);
+        hex(161, "SSCGCR", SH7305_CPG.SSCGCR.lword);
+        hex(186, "LSTATS", SH7305_CPG.LSTATS);
+        number(217, "FLL multiplier", SH7305_CPG.FLLFRQ.FLF);
+        number(242, "PLL multiplier", SH7305_CPG.FRQCR.STC + 1);
     }
     else {
-        snprintf(value, sizeof value, "%lu us",
-            (unsigned long)benchmark_us);
-        write_line(142, "Elapsed time", value);
-        snprintf(value, sizeof value, "0x%08lX",
-            (unsigned long)benchmark_sink);
-        write_line(170, "Checksum", value);
-        dtext(24, 208, C_DARK, "Lower elapsed time is faster.");
-        dtext(24, 235, C_DARK, "Press EXE to repeat.");
+        number(86, "FLL / 2", SH7305_CPG.FLLFRQ.SELXM);
+        number(111, "PLL enabled", SH7305_CPG.PLLCR.PLLE);
+        number(136, "FLL enabled", SH7305_CPG.PLLCR.FLLE);
+        number(161, "Spread spectrum", SH7305_CPG.SSCGCR.SSEN);
+        number(186, "CPU divider field", SH7305_CPG.FRQCR.IFC);
+        number(211, "Bus divider field", SH7305_CPG.FRQCR.BFC);
+        number(236, "I/O divider field", SH7305_CPG.FRQCR.P1FC);
+    }
+    dtext(22, 271, C_DARK, "UP/DOWN: CPG details       EXE: resample");
+}
+static void draw_bsc(void)
+{
+    struct cpg_overclock_setting s;
+    cpg_get_overclock_setting(&s);
+    if(!bsc_subpage) {
+        hex(86, "CS0BCR (ROM)", s.CS0BCR);
+        hex(110, "CS0WCR (ROM)", s.CS0WCR);
+        hex(134, "CS2BCR", s.CS2BCR);
+        hex(158, "CS2WCR", s.CS2WCR);
+        hex(182, "CS3BCR (SDRAM)", s.CS3BCR);
+        hex(206, "CS3WCR (SDRAM)", s.CS3WCR);
+        hex(230, "CS5aBCR", s.CS5aBCR);
+        hex(254, "CS5aWCR", s.CS5aWCR);
+    }
+    else {
+        number(86, "ROM read WR field", SH7305_BSC.CS0WCR.WR);
+        number(111, "ROM write WW field", SH7305_BSC.CS0WCR.WW);
+        number(136, "CS2 read WR field", SH7305_BSC.CS2WCR.WR);
+        number(161, "CS2 write WW field", SH7305_BSC.CS2WCR.WW);
+        number(186, "SDRAM TRC field", SH7305_BSC.CS3WCR.TRC);
+        number(211, "SDRAM CAS latency field", SH7305_BSC.CS3WCR.A3CL);
+        hex(236, "SDCR", SH7305_BSC.SDCR.lword);
+    }
+    dtext(22, 276, C_DARK, "UP/DOWN: BSC details    No wait-state writes.");
+}
+static void bench_row(int y, const char *name, uint32_t result,
+                      uint32_t reference)
+{
+    char s[64];
+    if(reference && result) {
+        unsigned ratio = (unsigned)(((uint64_t)reference * 100u) / result);
+        snprintf(s, sizeof s, "%lu us   %u%% of baseline",
+            (unsigned long)result, ratio);
+    }
+    else
+        snprintf(s, sizeof s, "%lu us", (unsigned long)result);
+    row(y, name, s);
+}
+static void draw_bench(void)
+{
+    if(benchmark_failed) {
+        dtext(22, 107, C_RED, "Profiler timer unavailable.");
+        dtext(22, 140, C_DARK, "Check the EX-word peripheral clock configuration.");
+    }
+    else if(!benchmark.done) {
+        dtext(22, 94, C_BLACK, "Press EXE to run Ptune-style performance tests.");
+        dtext(22, 130, C_DARK, "CPU: 100k integer iterations");
+        dtext(22, 153, C_DARK, "ROM: 64 KiB reads from own add-in");
+        dtext(22, 176, C_DARK, "RAM: 128 KiB traffic in owned buffer");
+        dtext(22, 199, C_DARK, "LCD: one hardware display transfer");
+        dtext(22, 246, C_DARK, "Timing methods differ from original Ptune.");
+    }
+    else {
+        bench_row(92, "CPU integer", benchmark.cpu_us,
+            benchmark_reference.cpu_us);
+        bench_row(123, "ROM reads", benchmark.rom_us,
+            benchmark_reference.rom_us);
+        bench_row(154, "RAM mix", benchmark.ram_us,
+            benchmark_reference.ram_us);
+        bench_row(185, "LCD update", benchmark.display_us,
+            benchmark_reference.display_us);
+        hex(216, "Checksum", benchmark.checksum);
+        dtext(22, 252, C_DARK, "100% = first run; higher % means faster.");
+        dtext(22, 276, C_DARK, "EXE: repeat for comparison.");
     }
 }
+static void draw_memory(void)
+{
+    if(!memory_result.done) {
+        dtext(22, 90, C_BLACK, "Checks only 1 KiB of EXTune-owned RAM.");
+        dtext(22, 128, C_DARK, "Patterns: 00, FF, 55, AA, walking bits,");
+        dtext(22, 151, C_DARK, "inverse walking bits, address noise.");
+        dtext(22, 190, C_BLACK, "EXE: 8 passes (quick check)");
+        dtext(22, 217, C_BLACK, "UP: 128 passes (stress check)");
+        dtext(22, 256, C_DARK, "No OS RAM, flash, or storage is touched.");
+    }
+    else {
+        row(94, "Result", memory_result.errors ? "FAIL" : "PASS");
+        number(130, "Completed passes", memory_result.passes);
+        number(164, "Mismatches", memory_result.errors);
+        if(memory_result.errors) {
+            number(202, "Index", memory_result.failing_index);
+            hex(229, "Expected", memory_result.expected);
+            hex(256, "Actual", memory_result.actual);
+        }
+        else {
+            dtext(22, 229, C_DARK, "Only the owned 1 KiB buffer was tested.");
+            dtext(22, 256, C_DARK, "EXE: retest    UP: extended test");
+        }
+    }
+}
+static uint64_t predicted(uint32_t current)
+{
+    if(!baseline_fll || !baseline_pll) return 0;
+    uint64_t result = (uint64_t)current * (unsigned)tune_fll;
+    result = result / (unsigned)baseline_fll;
+    result = result * (unsigned)tune_pll / (unsigned)baseline_pll;
+    return result;
+}
+static void draw_tune(void)
+{
+    char s[72];
+    dtext(22, 86, C_DARK, "EX-word clock planner (no register writes)");
+    snprintf(s, sizeof s, "FLL %d  (stock %d)", tune_fll, baseline_fll);
+    row(116, tune_field == 0 ? "> FLL multiplier" : "  FLL multiplier", s);
+    snprintf(s, sizeof s, "PLL %d  (stock %d)", tune_pll, baseline_pll);
+    row(145, tune_field == 1 ? "> PLL multiplier" : "  PLL multiplier", s);
+    mhz_uint(180, "Predicted CPU", predicted(baseline_freq.Iphi_f));
+    mhz_uint(207, "Predicted bus", predicted(baseline_freq.Bphi_f));
+    mhz_uint(234, "Predicted I/O", predicted(baseline_freq.Pphi_f));
 
+    if(predicted(baseline_freq.Bphi_f) * 10 >
+           (uint64_t)baseline_freq.Bphi_f * 11 ||
+       predicted(baseline_freq.Pphi_f) * 10 >
+           (uint64_t)baseline_freq.Pphi_f * 11)
+        dtext(22, 265, C_RED, "Bus/I/O >110% stock: timings unverified.");
+    else
+        dtext(22, 265, C_DARK, "UP/DOWN: field  EXE:+  Q:-  R:reset");
+}
 static void draw_about(void)
 {
-    dtext(24, 92, C_BLACK, "EXTune - EX-word adaptation of Xtune/Ptune4");
-    dtext(24, 119, C_DARK, "Built with gint-exword, JustUI-exword and fxSDK-exword.");
-    dtext(24, 158, C_BLACK, "Experimental / read-only clock diagnostics.");
-    dtext(24, 184, C_BLACK, "Calculator Ptune presets are NOT EX-word presets.");
-    dtext(24, 212, C_BLACK, "Clock, BSC and wait-state changes are disabled.");
-    dtext(24, 252, C_DARK, "Use on real hardware at your own risk.");
+    dtext(22, 91, C_BLACK, "EXTune for EX-word - Ptune-inspired diagnostics");
+    dtext(22, 124, C_DARK, "Clocks + CPG/BSC inspection + benchmarks");
+    dtext(22, 147, C_DARK, "RAM validation + clock candidate planning");
+    dtext(22, 182, C_BLACK, "Original Ptune/Ftune calculator profiles");
+    dtext(22, 205, C_BLACK, "are NOT safe presets for EX-word hardware.");
+    dtext(22, 246, C_RED, "Clock writes and BSC changes are LOCKED.");
+    dtext(22, 272, C_DARK, "All tests use this add-in's own memory.");
 }
 
-static void draw_screen(int page)
+static void render(void)
 {
+    int tab_width = DWIDTH / PAGE_COUNT;
     dclear(C_WHITE);
-    drect(0, 0, DWIDTH-1, 36, C_RGB(3, 9, 16));
+    drect(0, 0, DWIDTH-1, 38, C_RGB(3, 9, 16));
     for(int i=0; i<PAGE_COUNT; i++) {
+        int x = i*tab_width;
         if(i == page)
-            drect(i*132+2, 3, i*132+129, 33, C_RGB(12, 22, 28));
-        dtext(i*132+14, 14, C_WHITE, tabs[i]);
+            drect(x+1, 2, x+tab_width-2, 35, C_RGB(11, 21, 29));
+        dtext(x+5, 14, C_WHITE, tabs[i]);
     }
-
     if(heading_scene && heading_label) {
         jlabel_set_text(heading_label, titles[page]);
         jscene_render(heading_scene);
     }
-    else {
-        dtext(24, 52, C_BLACK, titles[page]);
+    else dtext(22, 53, C_BLACK, titles[page]);
+
+    switch(page) {
+        case PAGE_CLOCK: draw_clock(); break;
+        case PAGE_CPG: draw_cpg(); break;
+        case PAGE_BSC: draw_bsc(); break;
+        case PAGE_BENCH: draw_bench(); break;
+        case PAGE_MEMORY: draw_memory(); break;
+        case PAGE_TUNE: draw_tune(); break;
+        case PAGE_ABOUT: draw_about(); break;
     }
-
-    if(page == PAGE_CLOCKS) draw_clocks();
-    if(page == PAGE_REGISTERS) draw_registers();
-    if(page == PAGE_BENCH) draw_bench();
-    if(page == PAGE_ABOUT) draw_about();
-
-    drect(0, 292, DWIDTH-1, DHEIGHT-1, C_RGB(3, 9, 16));
-    dtext(12, 303, C_WHITE,
-        "LEFT/RIGHT: page    EXE: refresh / benchmark    ESC: exit");
+    drect(0, 294, DWIDTH-1, DHEIGHT-1, C_RGB(3, 9, 16));
+    dtext(11, 305, C_WHITE,
+        "LEFT/RIGHT page   EXE action   UP/DOWN option   ESC exit");
     dupdate();
 }
-
-static void run_benchmark(void)
+static void perform_action(int direction)
 {
-    /* Avoid claiming a timer before the first screen is displayed. */
-    if(!profiler_checked) {
-        profiler_available = (prof_init() == 0);
-        profiler_checked = true;
+    if(page == PAGE_CPG) cpg_compute_freq();
+    else if(page == PAGE_CLOCK) cpg_compute_freq();
+    else if(page == PAGE_BENCH && direction > 0) {
+        benchmark_failed = !extune_bench_run(&benchmark);
+        if(!benchmark_failed && !benchmark_ready) {
+            benchmark_reference = benchmark;
+            benchmark_ready = true;
+        }
     }
-    if(!profiler_available) return;
-    uint32_t v = 0x12345678;
-    prof_t p = prof_make();
-    prof_enter(p);
-    for(uint32_t i=0; i<100000; i++)
-        v = (v << 5) ^ (v >> 2) ^ (i * 2654435761u);
-    prof_leave(p);
-    benchmark_sink = v;
-    benchmark_us = prof_time(p);
-    benchmark_done = true;
+    else if(page == PAGE_MEMORY) {
+        extune_memtest_run(&memory_result, direction > 1 ? 128 : 8);
+    }
+    else if(page == PAGE_TUNE) {
+        if(tune_field == 0) {
+            tune_fll += direction * 2;
+            if(tune_fll < 1) tune_fll = 1;
+            if(tune_fll > 2047) tune_fll = 2047;
+        }
+        else {
+            tune_pll += direction;
+            if(tune_pll < 1) tune_pll = 1;
+            if(tune_pll > 64) tune_pll = 64;
+        }
+    }
 }
-
 int main(void)
 {
-    int page = PAGE_ABOUT;
-
     /*
-     * Hardware smoke checkpoint: display before any CPG/BSC inspection,
-     * profiler initialization, or JustUI widget allocation. If this screen
-     * never appears, the problem is earlier (loader, gint, or constructors).
-     * The start key may still be down when the module loads; accept a fresh
-     * KEYEV_DOWN and allow EXIT to return without touching hardware.
+     * Preserve the boot checkpoint that was confirmed to work on CN EX-word.
+     * Nothing related to clock reads or JustUI runs before this screen.
      */
     dclear(C_WHITE);
-    dtext(24, 34, C_BLACK, "EXTune / EX-word - boot checkpoint");
-    dtext(24, 85, C_BLACK, "gint rendering initialized.");
-    dtext(24, 119, C_DARK, "No clocks or memory settings changed.");
-    dtext(24, 173, C_BLUE, "Press EXE to continue.");
-    dtext(24, 207, C_DARK, "Press ESC to return to menu.");
+    dtext(22, 33, C_BLACK, "EXTune EX-word - Ptune-style lab");
+    dtext(22, 87, C_BLACK, "Clock monitor / benchmarks / RAM tests");
+    dtext(22, 127, C_DARK, "No PLL or memory controller writes.");
+    dtext(22, 188, C_BLUE, "Press EXE to enter.");
+    dtext(22, 218, C_DARK, "Press ESC to return to menu.");
     dupdate();
-
-    while(true) {
+    for(;;) {
         key_event_t e = waitevent(NULL);
         if(e.type != KEYEV_DOWN) continue;
         if(e.key == KEY_EXIT) return -2;
         if(e.key == KEY_EXE) break;
     }
 
-    /* JustUI renders the page title; gint handles EX-word key/touch events. */
-    heading_scene = jscene_create(20, 48, DWIDTH-40, 30, NULL);
+    capture();
+    heading_scene = jscene_create(18, 46, DWIDTH-36, 32, NULL);
     if(heading_scene) {
         heading_label = jlabel_create(titles[page], heading_scene);
         if(heading_label) jlabel_set_text_color(heading_label, C_BLACK);
     }
-    draw_screen(page);
 
+    render();
     bool running = true;
     while(running) {
         key_event_t e = waitevent(NULL);
-        if(e.type == KEYEV_TOUCH_DOWN && e.y < 38) {
-            int choice = e.x / 132;
-            if(choice >= 0 && choice < PAGE_COUNT) page = choice;
+        if(e.type == KEYEV_TOUCH_DOWN) {
+            if(e.y < 39) {
+                int next = e.x / (DWIDTH / PAGE_COUNT);
+                if(next >= 0 && next < PAGE_COUNT) page = next;
+            }
+            else if(page == PAGE_TUNE && e.y > 247 && e.y < 292) {
+                if(e.x < DWIDTH / 2) perform_action(-1);
+                else perform_action(+1);
+            }
         }
         else if(e.type == KEYEV_DOWN || e.type == KEYEV_HOLD) {
-            /* Do not interpret a held launch/AC key as an immediate exit. */
-            if(e.key == KEY_EXIT && e.type == KEYEV_DOWN) running = false;
-            else if(e.key == KEY_LEFT) page = (page + PAGE_COUNT - 1) % PAGE_COUNT;
-            else if(e.key == KEY_RIGHT) page = (page + 1) % PAGE_COUNT;
-            else if(e.key == KEY_EXE && page == PAGE_BENCH && e.type == KEYEV_DOWN)
-                run_benchmark();
+            if(e.key == KEY_EXIT && e.type == KEYEV_DOWN) {
+                running = false;
+            }
+            else if(e.key == KEY_LEFT)
+                page = (page + PAGE_COUNT - 1) % PAGE_COUNT;
+            else if(e.key == KEY_RIGHT)
+                page = (page + 1) % PAGE_COUNT;
+            else if(e.key == KEY_UP) {
+                if(page == PAGE_CPG) cpg_subpage ^= 1;
+                else if(page == PAGE_BSC) bsc_subpage ^= 1;
+                else if(page == PAGE_TUNE) tune_field ^= 1;
+                else if(page == PAGE_MEMORY && e.type == KEYEV_DOWN)
+                    perform_action(2);
+            }
+            else if(e.key == KEY_DOWN) {
+                if(page == PAGE_CPG) cpg_subpage ^= 1;
+                else if(page == PAGE_BSC) bsc_subpage ^= 1;
+                else if(page == PAGE_TUNE) tune_field ^= 1;
+            }
+            else if(e.type == KEYEV_DOWN) {
+                if(e.key == KEY_EXE) perform_action(1);
+                else if(page == PAGE_TUNE && e.key == KEY_EX_Q)
+                    perform_action(-1);
+                else if(page == PAGE_TUNE && e.key == KEY_EX_R) {
+                    tune_fll = baseline_fll;
+                    tune_pll = baseline_pll;
+                }
+            }
         }
-        if(running) draw_screen(page);
+        if(running) render();
     }
 
     if(heading_scene) jwidget_destroy(heading_scene);
-    if(profiler_available) prof_quit();
-    /* EX-word gint expects -2 for a normal return to its host menu. */
+    extune_bench_quit();
     return -2;
 }
