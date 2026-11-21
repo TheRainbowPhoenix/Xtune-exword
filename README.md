@@ -143,3 +143,39 @@ does not offer a "push to the limits" button or write untested PLL/BSC
 values to hardware. Record baseline clocks, raw registers, and benchmark
 results first. The only way to assess a real safe ceiling is with
 EX-word-specific characterization and on-device testing.
+
+### CPtune4 feature port on EX-word
+
+The EX-word branch now provides **CPtune4 Express**, Startup memory test choice,
+CPG/BSC inspector and manual BSC fields, **Memory Data**, all 13 Ptune settings,
+F2-F5 capture/recall presets, Bench, RAM Test, clock planner, and Help.
+
+JustUI jscene/jbutton widgets draw the six top-level navigation controls for
+the current tab bank (LEFT/RIGHT rotates through all 12 screens); JustUI
+jlabel renders the active heading. The original 528x320 EX-word startup
+checkpoint remains before any register or JustUI initialization.
+
+Express: UP/DOWN select FLL/PLL/IFC/SFC/BFC/PFC; press S to arm *experimental*
+hardware writes, EXE/Q to raise/lower by one register step, R to revert to
+the captured boot image. BSC: V switches raw/editor; UP/DOWN selects a timing
+field and EXE/Q edits after arming; direct SDRAM CAS latency changes are
+blocked because they need a verified mode-register sequence.
+
+Memory Data: the original CPtune4 ROM/SDRAM margin tables are included as
+**starting reference values**, not measured EX-word limits. EXE toggles raw
+and margin-adjusted view; Q checks a read-only add-in ROM region; W checks
+owned RAM. Startup memory test is enabled by default with RAM, ROM+RAM,
+or skip choices. Original Ptune's frequency-destructive ROM/SDRAM sweep
+has not been copied because its hard-coded 0xA... addresses can map to a
+different EX-word memory topology.
+
+Settings: UP/DOWN select and EXE/Q change 13 original CPtune options.
+Presets: F2-F5 slots; EXE applies a captured device preset after arm,
+S captures current state, O saves / I loads config to EXTUNE.SAV on drv0
+via the OS world, R resets local settings. Never load arbitrary calculator
+Ptune presets into EX-word.
+
+**Do not assume a shared SH7305 processor means shared ROM, RAM or LCD
+board-level timings.** Experimental hardware writes may freeze the unit
+and could require a hardware RESTART. No tuner changes are persisted as
+startup clocks and the app attempts normal restored state when requested.

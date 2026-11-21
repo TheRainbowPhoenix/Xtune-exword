@@ -13,28 +13,35 @@
 #include <justui/jscene.h>
 #include <justui/jlabel.h>
 #include <justui/jwidget.h>
+#include <justui/jbutton.h>
+#include <justui/jlayout.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include "bench.h"
+#include "ptune_port.h"
 
 #if !GINT_HW_EX
 #error "EXTune EX-word requires EXWORD platform"
 #endif
 
 enum {
-    PAGE_CLOCK, PAGE_CPG, PAGE_BSC, PAGE_BENCH,
-    PAGE_MEMORY, PAGE_TUNE, PAGE_ABOUT, PAGE_COUNT
+    PAGE_EXPRESS, PAGE_CLOCK, PAGE_CPG, PAGE_BSC,
+    PAGE_BENCH, PAGE_MEMORY, PAGE_MEMDATA, PAGE_SETTINGS,
+    PAGE_TUNE, PAGE_PRESETS, PAGE_HELP, PAGE_ABOUT, PAGE_COUNT
 };
 static const char *const tabs[] = {
-    "Clocks", "CPG", "BSC", "Bench", "RAM test", "Plan", "About"
+    "Express", "Clocks", "CPG", "BSC", "Bench", "RAM test",
+    "Mem Data", "Settings", "Plan", "Presets", "Help", "About"
 };
 static const char *const titles[] = {
-    "Live clocks", "Clock generator (CPG)", "Memory controller (BSC)",
-    "Performance benchmark", "Non-destructive RAM validation",
-    "Frequency planning lab", "EXTune for EX-word"
+    "CPtune4 Express", "Live clocks", "Clock generator (CPG)",
+    "Memory controller (BSC)", "Performance benchmark",
+    "Non-destructive RAM validation", "CPtune4 Memory data",
+    "CPtune4 Settings", "Frequency planning lab", "F2-F5 Presets",
+    "CPtune4 controls", "EXTune for EX-word"
 };
-static int page = PAGE_CLOCK;
+static int page = PAGE_EXPRESS;
 static int cpg_subpage, bsc_subpage;
 static int tune_field; /* 0 FLL, 1 PLL */
 static int tune_fll, tune_pll;
@@ -46,8 +53,9 @@ static extune_bench_t benchmark, benchmark_reference;
 static extune_memtest_t memory_result;
 static bool benchmark_ready;
 static bool benchmark_failed;
-static bool memory_stress;
 static jscene *heading_scene;
+static jscene *tab_scene;
+static jbutton *tab_buttons[6];
 static jlabel *heading_label;
 
 static void row(int y, const char *name, const char *value)
@@ -269,15 +277,18 @@ static void draw_about(void)
 
 static void render(void)
 {
-    int tab_width = DWIDTH / PAGE_COUNT;
     dclear(C_WHITE);
     drect(0, 0, DWIDTH-1, 38, C_RGB(3, 9, 16));
-    for(int i=0; i<PAGE_COUNT; i++) {
-        int x = i*tab_width;
-        if(i == page)
-            drect(x+1, 2, x+tab_width-2, 35, C_RGB(11, 21, 29));
-        dtext(x+5, 14, C_WHITE, tabs[i]);
+    int group = page / 6;
+    for(int i=0;i<6;i++) {
+        if(tab_buttons[i]) {
+            jbutton_set_text(tab_buttons[i],tabs[group*6+i]);
+            jbutton_set_disabled(tab_buttons[i],group*6+i == page);
+        }
     }
+    if(tab_scene) jscene_render(tab_scene);
+    else for(int i=0;i<6;i++)
+        dtext(8+88*i,14,C_WHITE,tabs[group*6+i]);
     if(heading_scene && heading_label) {
         jlabel_set_text(heading_label, titles[page]);
         jscene_render(heading_scene);
@@ -285,13 +296,40 @@ static void render(void)
     else dtext(22, 53, C_BLACK, titles[page]);
 
     switch(page) {
+        case PAGE_EXPRESS: pt_draw_express(); break;
         case PAGE_CLOCK: draw_clock(); break;
         case PAGE_CPG: draw_cpg(); break;
-        case PAGE_BSC: draw_bsc(); break;
+        case PAGE_BSC:
+            if(bsc_subpage) pt_draw_bsc_editor();
+            else draw_bsc();
+            break;
         case PAGE_BENCH: draw_bench(); break;
         case PAGE_MEMORY: draw_memory(); break;
+        case PAGE_MEMDATA:
+            pt_draw_memdata();
+            if(pt_romcheck_result() >= 0) {
+                char s[48];
+                snprintf(s,sizeof s,"ROM check errors: %d",pt_romcheck_result());
+                dtext(278,257,pt_romcheck_result()?C_RED:C_BLUE,s);
+            }
+            break;
+        case PAGE_SETTINGS: pt_draw_settings(); break;
         case PAGE_TUNE: draw_tune(); break;
+        case PAGE_PRESETS: pt_draw_presets(); break;
+        case PAGE_HELP: pt_draw_help(); break;
         case PAGE_ABOUT: draw_about(); break;
+    }
+    if(pt_notice) {
+        const char *msg[]={
+            "", "Arm writes with S first", "Rejected by clock limits",
+            "SDRAM CAS change locked", "Config save failed",
+            "Config saved", "Config load failed", "Config loaded"
+        };
+        if(pt_notice>=0 && pt_notice<8)
+            dtext(20,281,pt_notice==2||pt_notice==4||pt_notice==6?C_RED:C_BLUE,
+                msg[pt_notice]);
+        else if(pt_notice==8)
+            dtext(20,281,C_RED,"Press S again to ARM experimental writes");
     }
     drect(0, 294, DWIDTH-1, DHEIGHT-1, C_RGB(3, 9, 16));
     dtext(11, 305, C_WHITE,
@@ -300,7 +338,12 @@ static void render(void)
 }
 static void perform_action(int direction)
 {
-    if(page == PAGE_CPG) cpg_compute_freq();
+    if(page == PAGE_EXPRESS) pt_edit_express(direction);
+    else if(page == PAGE_BSC && bsc_subpage) pt_edit_bsc(direction);
+    else if(page == PAGE_MEMDATA) pt_mem_margin ^= 1;
+    else if(page == PAGE_SETTINGS) pt_adjust_setting(direction,0);
+    else if(page == PAGE_PRESETS && direction > 0) pt_choose_preset(false);
+    else if(page == PAGE_CPG) cpg_compute_freq();
     else if(page == PAGE_CLOCK) cpg_compute_freq();
     else if(page == PAGE_BENCH && direction > 0) {
         benchmark_failed = !extune_bench_run(&benchmark);
@@ -332,9 +375,9 @@ int main(void)
      * Nothing related to clock reads or JustUI runs before this screen.
      */
     dclear(C_WHITE);
-    dtext(22, 33, C_BLACK, "EXTune EX-word - Ptune-style lab");
-    dtext(22, 87, C_BLACK, "Clock monitor / benchmarks / RAM tests");
-    dtext(22, 127, C_DARK, "No PLL or memory controller writes.");
+    dtext(22, 33, C_BLACK, "EXTune - CPtune4 EX-word port");
+    dtext(22, 87, C_BLACK, "Express / BSC / Memory data / Settings");
+    dtext(22, 127, C_DARK, "Experimental tuning requires arming.");
     dtext(22, 188, C_BLUE, "Press EXE to enter.");
     dtext(22, 218, C_DARK, "Press ESC to return to menu.");
     dupdate();
@@ -346,6 +389,60 @@ int main(void)
     }
 
     capture();
+    pt_init();
+
+    /* CPtune4 startup memory test prompt, before the Express menu. */
+    if(pt.settings[PT_START_TEST]) {
+        dclear(C_WHITE);
+        dtext(20,30,C_BLACK,"CPtune4 - Startup memory test");
+        dtext(20,84,C_DARK,"Choose an option (keyboard):");
+        dtext(20,121,C_BLUE,"Q / 1  RAM only");
+        dtext(20,158,C_BLUE,"W / 2  ROM and RAM");
+        dtext(20,195,C_BLUE,"E / 3  None");
+        dtext(20,242,C_DARK,"Tests use owned memory; firmware is not written.");
+        dupdate();
+        int kind=0;
+        for(;;) {
+            key_event_t e=waitevent(NULL);
+            if(e.type!=KEYEV_DOWN)continue;
+            if(e.key==KEY_EX_Q || e.key==KEY_1) {kind=1;break;}
+            if(e.key==KEY_EX_W || e.key==KEY_2) {kind=2;break;}
+            if(e.key==KEY_EX_E || e.key==KEY_3 || e.key==KEY_EXE)
+                break;
+            if(e.key==KEY_EXIT)return -2;
+        }
+        if(kind) {
+            extune_memtest_run(&memory_result,8);
+            if(kind==2)pt_run_romcheck();
+            dclear(C_WHITE);
+            dtext(20,40,C_BLACK,"Startup memory test completed");
+            dtext(20,97,memory_result.errors?C_RED:C_BLUE,
+                memory_result.errors?"RAM FAIL":"RAM PASS");
+            if(kind==2)
+                dtext(20,130,pt_romcheck_result()?C_RED:C_BLUE,
+                    pt_romcheck_result()?"ROM FAIL":"ROM PASS");
+            dtext(20,205,C_DARK,"Press EXE for CPtune4 Express.");
+            dupdate();
+            for(;;) {
+                key_event_t e=waitevent(NULL);
+                if(e.type==KEYEV_DOWN&&e.key==KEY_EXE)break;
+                if(e.type==KEYEV_DOWN&&e.key==KEY_EXIT)return -2;
+            }
+        }
+    }
+
+    tab_scene=jscene_create(0,0,DWIDTH,38,NULL);
+    if(tab_scene) {
+        jlayout_box *layout=jlayout_set_hbox(tab_scene);
+        if(layout) layout->spacing=1;
+        for(int i=0;i<6;i++) {
+            tab_buttons[i]=jbutton_create(tabs[i],tab_scene);
+            if(tab_buttons[i]) {
+                jwidget_set_fixed_size(tab_buttons[i],87,36);
+                jbutton_set_disabled(tab_buttons[i],i==0);
+            }
+        }
+    }
     heading_scene = jscene_create(18, 46, DWIDTH-36, 32, NULL);
     if(heading_scene) {
         heading_label = jlabel_create(titles[page], heading_scene);
@@ -358,7 +455,7 @@ int main(void)
         key_event_t e = waitevent(NULL);
         if(e.type == KEYEV_TOUCH_DOWN) {
             if(e.y < 39) {
-                int next = e.x / (DWIDTH / PAGE_COUNT);
+                int next = (page/6)*6 + e.x/(DWIDTH/6);
                 if(next >= 0 && next < PAGE_COUNT) page = next;
             }
             else if(page == PAGE_TUNE && e.y > 247 && e.y < 292) {
@@ -375,31 +472,86 @@ int main(void)
             else if(e.key == KEY_RIGHT)
                 page = (page + 1) % PAGE_COUNT;
             else if(e.key == KEY_UP) {
-                if(page == PAGE_CPG) cpg_subpage ^= 1;
-                else if(page == PAGE_BSC) bsc_subpage ^= 1;
+                if(page == PAGE_EXPRESS) {
+                    if(pt_expr_cursor>0)pt_expr_cursor--;
+                }
+                else if(page == PAGE_SETTINGS) {
+                    if(pt_setting_cursor>0)pt_setting_cursor--;
+                }
+                else if(page == PAGE_PRESETS) {
+                    if(pt_preset_cursor>0)pt_preset_cursor--;
+                }
+                else if(page == PAGE_CPG) cpg_subpage ^= 1;
+                else if(page == PAGE_BSC) {
+                    if(!bsc_subpage)bsc_subpage=1;
+                    else if(pt_bsc_cursor>0)pt_bsc_cursor--;
+                }
                 else if(page == PAGE_TUNE) tune_field ^= 1;
                 else if(page == PAGE_MEMORY && e.type == KEYEV_DOWN)
                     perform_action(2);
             }
             else if(e.key == KEY_DOWN) {
-                if(page == PAGE_CPG) cpg_subpage ^= 1;
-                else if(page == PAGE_BSC) bsc_subpage ^= 1;
+                if(page == PAGE_EXPRESS) {
+                    if(pt_expr_cursor<5)pt_expr_cursor++;
+                }
+                else if(page == PAGE_SETTINGS) {
+                    if(pt_setting_cursor<PT_SETTING_COUNT-1)pt_setting_cursor++;
+                }
+                else if(page == PAGE_PRESETS) {
+                    if(pt_preset_cursor<3)pt_preset_cursor++;
+                }
+                else if(page == PAGE_CPG) cpg_subpage ^= 1;
+                else if(page == PAGE_BSC) {
+                    if(!bsc_subpage)bsc_subpage=1;
+                    else if(pt_bsc_cursor<4)pt_bsc_cursor++;
+                }
                 else if(page == PAGE_TUNE) tune_field ^= 1;
             }
             else if(e.type == KEYEV_DOWN) {
                 if(e.key == KEY_EXE) perform_action(1);
-                else if(page == PAGE_TUNE && e.key == KEY_EX_Q)
+                else if(e.key == KEY_EX_S &&
+                    (page == PAGE_EXPRESS || page == PAGE_BSC)) {
+                    pt_write_armed=(pt_write_armed+1)%3;
+                    pt_set_notice(pt_write_armed==1?8:0);
+                }
+                else if(e.key == KEY_EX_Q &&
+                    (page == PAGE_EXPRESS ||
+                     (page == PAGE_BSC && bsc_subpage) ||
+                     page == PAGE_SETTINGS || page == PAGE_TUNE))
                     perform_action(-1);
-                else if(page == PAGE_TUNE && e.key == KEY_EX_R) {
+                else if(e.key == KEY_EX_Q && page == PAGE_MEMDATA)
+                    pt_run_romcheck();
+                else if(e.key == KEY_EX_W && page == PAGE_MEMDATA) {
+                    extune_memtest_run(&memory_result,128);
+                    page=PAGE_MEMORY;
+                }
+                else if(e.key == KEY_EX_S && page == PAGE_PRESETS)
+                    pt_choose_preset(true);
+                else if(e.key == KEY_EX_O &&
+                    (page == PAGE_PRESETS || page == PAGE_SETTINGS))
+                    pt_save();
+                else if(e.key == KEY_EX_I &&
+                    (page == PAGE_PRESETS || page == PAGE_SETTINGS))
+                    pt_load();
+                else if(e.key == KEY_EX_R && page == PAGE_EXPRESS)
+                    pt_restore();
+                else if(e.key == KEY_EX_R && page == PAGE_SETTINGS)
+                    pt_adjust_setting(-1,0);
+                else if(e.key == KEY_EX_R && page == PAGE_PRESETS)
+                    pt_reset();
+                else if(e.key == KEY_EX_R && page == PAGE_TUNE) {
                     tune_fll = baseline_fll;
                     tune_pll = baseline_pll;
                 }
+                else if(e.key == KEY_EX_V && page == PAGE_BSC)
+                    bsc_subpage ^= 1;
             }
         }
         if(running) render();
     }
 
     if(heading_scene) jwidget_destroy(heading_scene);
+    if(tab_scene) jwidget_destroy(tab_scene);
     extune_bench_quit();
     return -2;
 }
